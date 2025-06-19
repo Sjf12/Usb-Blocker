@@ -4,7 +4,7 @@ import subprocess
 import os
 
 # Define the password
-PASSWORD = "Kaushik"
+PASSWORD = "" # Replace you desired password
 
 # Function to block USB ports
 def block_usb():
