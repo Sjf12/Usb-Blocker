@@ -3,6 +3,7 @@
   You can do this by typing your password within 'PASSWORD' variable within the file ]
 
 To run this tool run the following command within the downloaded directory :
+
         windows =>   python usb.py
         Linux   =>   python3 usb.py
 
