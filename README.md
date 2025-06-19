@@ -1,4 +1,4 @@
-[ Important Note! : Before using this tool within 'usb.py' file add you password to run the tool.
+[ Important Note! : Before using this tool within 'usb.py' file add you need to add your password to run the tool.
                  
   You can do this by typing your password within 'PASSWORD' variable within the file ]
 
