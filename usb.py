@@ -1,63 +1,107 @@
-import tkinter as tk
-from tkinter import messagebox
+import ctypes
 import subprocess
+import time
+import json
 import os
+import signal
+import sys
+import atexit
 
-# Define the password
-PASSWORD = "" # Replace you desired password
+BLACKLIST_FILE = "blocked_usb.json"
 
-# Function to block USB ports
-def block_usb():
+# ---------------- Admin Check ----------------
+def is_admin():
     try:
-        subprocess.run(r'block_usb.bat', text=True, check=True)
-        messagebox.showinfo("USB Security", "USB Ports Disabled Successfully")
-    except subprocess.CalledProcessError as e:
-        messagebox.showerror("Error", f"Failed to block USB ports: {e}")
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
 
-# Function to unblock USB ports
-def unblock_usb():
-    # Create a password prompt dialog box
-    password_window = tk.Toplevel(root)
-    password_window.title("Enter Password")
-    password_window.geometry("300x200")
-    password_window.grab_set()  # Ensure the password window has focus
+if not is_admin():
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", "python", __file__, None, 1
+    )
+    sys.exit(0)
 
-    password_label = tk.Label(password_window, text="Enter Password:")
-    password_label.pack(pady=10)
+# ---------------- Helpers ----------------
+def run_ps(cmd):
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
-    password_entry = tk.Entry(password_window, show="*")
-    password_entry.pack(pady=10)
+def load_blacklist():
+    if os.path.exists(BLACKLIST_FILE):
+        with open(BLACKLIST_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
 
-    def ok_button():
-        if password_entry.get() == PASSWORD:
-            try:
-                subprocess.run(r'unblock_usb.bat', text=True, check=True)
-                password_window.destroy()
-                messagebox.showinfo("USB Security", "USB Ports Enabled Successfully")
-            except subprocess.CalledProcessError as e:
-                messagebox.showerror("Error", f"Failed to unblock USB ports: {e}")
-        else:
-            error_label.config(text="Incorrect password. Please try again.")
-            password_entry.delete(0, tk.END)
+def save_blacklist(data):
+    with open(BLACKLIST_FILE, "w") as f:
+        json.dump(list(data), f)
 
-    ok_button = tk.Button(password_window, text="OK", command=ok_button)
-    ok_button.pack(pady=10)
+blocked = load_blacklist()
+seen = set()
+disabled_instances = set()
 
-    error_label = tk.Label(password_window, text="", font=("Arial", 12), fg="red")
-    error_label.pack()
+print("[+] USB Guard running")
+print("[!] First ATtiny insertion allowed, future insertions blocked")
+print("[!] Devices will be restored when script exits")
 
-# Main window
-root = tk.Tk()
-root.title("USB Security")
-root.geometry("300x150")
+# ---------------- Cleanup Logic ----------------
+def cleanup():
+    if disabled_instances:
+        print("[*] Restoring disabled USB devices...")
+        for instance in disabled_instances:
+            run_ps(
+                f"Enable-PnpDevice -InstanceId '{instance}' -Confirm:$false"
+            )
+        print("[+] USB devices restored")
 
-# Block USB button
-block_button = tk.Button(root, text="Block USB Ports", command=block_usb, width=25)
-block_button.pack(pady=10)
+atexit.register(cleanup)
 
-# Unblock USB button
-unblock_button = tk.Button(root, text="Unblock USB Ports", command=unblock_usb, width=25)
-unblock_button.pack(pady=10)
+def handle_exit(sig, frame):
+    sys.exit(0)
 
-# Start the Tkinter loop
-root.mainloop()
+signal.signal(signal.SIGINT, handle_exit)
+signal.signal(signal.SIGTERM, handle_exit)
+
+# ---------------- Monitor Loop ----------------
+while True:
+    ps = r"""
+    Get-PnpDevice -PresentOnly |
+    Where-Object { $_.InstanceId -like 'USB*' } |
+    Select-Object -ExpandProperty InstanceId
+    """
+    try:
+        result = subprocess.check_output(
+            ["powershell", "-Command", ps],
+            text=True,
+            errors="ignore"
+        ).splitlines()
+    except subprocess.CalledProcessError:
+        time.sleep(2)
+        continue
+
+    for dev in result:
+        if "VID_" not in dev:
+            continue
+
+        vidpid = dev.split("\\")[1]
+
+        # First time seen → allow once, then blacklist
+        if vidpid not in seen and vidpid not in blocked:
+            print(f"[!] New USB detected (allowed once): {vidpid}")
+            seen.add(vidpid)
+            blocked.add(vidpid)
+            save_blacklist(blocked)
+
+        # Future insertions → block temporarily
+        elif vidpid in blocked and dev not in disabled_instances:
+            run_ps(
+                f"Disable-PnpDevice -InstanceId '{dev}' -Confirm:$false"
+            )
+            disabled_instances.add(dev)
+            print(f"[X] Blocked USB device: {vidpid}")
+
+    time.sleep(2)
